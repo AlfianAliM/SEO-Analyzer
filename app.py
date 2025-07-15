@@ -37,9 +37,14 @@ if uploaded_file is not None:
 
     # Logic flags
     df['CTR Drop'] = df['Last 3 months CTR'] < df['Previous 3 months CTR'] * 0.9
-    df['Low CTR High Position'] = (df['Last 3 months CTR'] < 0.02) & \
-                                  (df['Last 3 months Position'] < 3) & \
-                                  (df['Last 3 months Impressions'] > 5000)
+    # df['Low CTR High Position'] = (df['Last 3 months CTR'] < 0.02) & \
+    #                               (df['Last 3 months Position'] < 3) & \
+    #                               (df['Last 3 months Impressions'] > 5000)
+    df['Low CTR High Position'] = (
+        (df['Last 3 months CTR'] < 0.02) &
+        (df['Last 3 months Position'] < 3) &
+        (df['Last 3 months Impressions'] > 5000)
+    )
     df['Click Down While Impr Up'] = (df['Last 3 months Clicks'] < df['Previous 3 months Clicks']) & \
                                      (df['Last 3 months Impressions'] > df['Previous 3 months Impressions'])
 
@@ -81,11 +86,27 @@ if uploaded_file is not None:
     # Display table
     st.markdown("###  Overview")
     st.dataframe(
-        display_df.style
+        df.style
+        .format({
+            'Last 3 months CTR': '{:.2%}',
+            'Previous 3 months CTR': '{:.2%}',
+            'Last 3 months Position': '{:.2f}',
+            'Previous 3 months Position': '{:.2f}',
+            'CTR Drop %': '{:.2f}',
+            'CTR Gap': '{:.2%}',
+            'Position Change': '{:.2f}'
+        })
         .applymap(lambda val: 'background-color: #ffe6e6' if val is True else '', subset=['CTR Drop', 'Low CTR High Position', 'Click Down While Impr Up'])
         .applymap(lambda val: 'background-color: #fff3cd' if val is True else '', subset=['Needs Optimization']),
         use_container_width=True
     )
+
+    # st.dataframe(
+    #     display_df.style
+    #     .applymap(lambda val: 'background-color: #ffe6e6' if val is True else '', subset=['CTR Drop', 'Low CTR High Position', 'Click Down While Impr Up'])
+    #     .applymap(lambda val: 'background-color: #fff3cd' if val is True else '', subset=['Needs Optimization']),
+    #     use_container_width=True
+    # )
 
     # Summary
     st.markdown("###  Summary Stats")
