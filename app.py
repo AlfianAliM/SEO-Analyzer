@@ -121,14 +121,35 @@ if uploaded_file is not None:
             df.columns = df.columns.str.strip()
             keyword_col = "Top queries"
             if keyword_col not in df.columns: st.error(f"Kolom '{keyword_col}' tidak ditemukan."); st.stop()
-            def parse_ctr(data, col_name):
-                if col_name in data.columns and data[col_name].dtype == 'object':
-                    data[col_name] = pd.to_numeric(data[col_name].str.replace('%', '', regex=False), errors='coerce') / 100
-                return data
-            for col in ['Last 3 months CTR', 'Previous 3 months CTR', 'Last 3 months Position', 'Previous 3 months Position', 'Last 3 months Impressions', 'Previous 3 months Impressions', 'Last 3 months Clicks', 'Previous 3 months Clicks']:
-                if col not in df.columns:
-                    df[col] = 0
-            df = parse_ctr(df, 'Last 3 months CTR'); df = parse_ctr(df, 'Previous 3 months CTR')
+            
+            # ### PERBAIKAN: Pastikan semua kolom metrik bersih dan numerik ###
+            metric_cols = [
+                'Last 3 months CTR', 'Previous 3 months CTR', 
+                'Last 3 months Position', 'Previous 3 months Position', 
+                'Last 3 months Impressions', 'Previous 3 months Impressions', 
+                'Last 3 months Clicks', 'Previous 3 months Clicks'
+            ]
+            
+            # Konversi semua kolom metrik menjadi numerik. 
+            # `errors='coerce'` akan mengubah nilai non-numerik (teks) menjadi NaN (kosong).
+            for col in metric_cols:
+                if col in df.columns:
+                    # Khusus untuk CTR yang mungkin dalam format persen
+                    if 'CTR' in col and df[col].dtype == 'object':
+                        df[col] = df[col].astype(str).str.replace('%', '', regex=False)
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # Isi semua sel kosong (NaN) yang mungkin muncul dengan 0.
+            df[metric_cols] = df[metric_cols].fillna(0)
+            
+            # Normalisasi kolom CTR setelah dipastikan numerik
+            if 'Last 3 months CTR' in df.columns and df['Last 3 months CTR'].max() > 1:
+                df['Last 3 months CTR'] = df['Last 3 months CTR'] / 100
+            if 'Previous 3 months CTR' in df.columns and df['Previous 3 months CTR'].max() > 1:
+                df['Previous 3 months CTR'] = df['Previous 3 months CTR'] / 100
+            # ### AKHIR BLOK PERBAIKAN ###
+
+            # Kalkulasi sekarang aman karena semua input sudah numerik
             df['Needs Optimization'] = ((df['Last 3 months CTR'] < df['Previous 3 months CTR'] * 0.9) |
                                         ((df['Last 3 months CTR'] < 0.02) & (df['Last 3 months Position'] < 3) & (df['Last 3 months Impressions'] > 5000)) |
                                         ((df['Last 3 months Clicks'] < df['Previous 3 months Clicks']) & (df['Last 3 months Impressions'] > df['Previous 3 months Impressions'])))
@@ -147,6 +168,7 @@ if uploaded_file is not None:
 
         st.session_state.df = df
         st.rerun()
+
 
     df = st.session_state.df
     keyword_col = "Top queries"
