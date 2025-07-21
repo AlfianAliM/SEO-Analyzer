@@ -6,7 +6,7 @@ import time
 import psycopg2
 import psycopg2.extras
 from datetime import datetime
-import altair as alt # ### PERUBAHAN: Tambahkan import ini ###
+import altair as alt
 
 # --- KONFIGURASI DAN KONEKSI ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -315,9 +315,7 @@ if uploaded_file is not None:
 
     else:
         st.info("Tidak ada data untuk ditampilkan dalam visualisasi berdasarkan filter Anda saat ini.")
-    ### ====================================================================== ###
-    ### ### AKHIR BLOK PERUBAHAN                                             ### ###
-    ### ====================================================================== ###
+    
 
 else:
     st.info(" Selamat datang! Silakan upload file CSV dari Google Search Console untuk memulai analisis.")
