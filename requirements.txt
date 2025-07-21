@@ -1,3 +1,5 @@
 streamlit
 pandas
 matplotlib
+google-generativeai
+psycopg2-binary
