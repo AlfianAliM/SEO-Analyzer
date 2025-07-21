@@ -6,16 +6,22 @@ import time
 import psycopg2
 import psycopg2.extras
 from datetime import datetime
-import altair as alt
 
-# --- KONFIGURASI DAN KONEKSI ---
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+# --- KONFIG-URASI DAN KONEKSI ---
+try:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+except (KeyError, AttributeError):
+    st.error("Kunci API Gemini belum diatur. Harap tambahkan ke secrets Anda.")
+    st.stop()
 
 @st.cache_resource
 def get_db_conn():
     try:
         conn = psycopg2.connect(**st.secrets["postgres"])
         return conn
+    except (KeyError, AttributeError):
+        st.error("Konfigurasi database PostgreSQL belum diatur. Harap tambahkan ke secrets Anda.")
+        return None
     except psycopg2.OperationalError as e:
         st.error(f"Gagal terhubung ke database PostgreSQL: {e}")
         return None
@@ -70,18 +76,14 @@ def detect_intents_batch(keywords):
         "Berikut adalah keyword yang harus dianalisis:\n"
     )
     prompt += "\n".join([f"- {kw}" for kw in keywords])
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        raw = response.text.strip()
-        intents = {
-            parts[0].replace("-", "").strip().lower(): parts[1].strip().capitalize()
-            for line in raw.splitlines() if ":" in line and (parts := line.split(":", 1))
-        }
-        return intents
-    except Exception as e:
-        st.error(f"[Gemini ERROR]: {e}")
-        return {}
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    response = model.generate_content(prompt)
+    raw = response.text.strip()
+    intents = {
+        parts[0].replace("-", "").strip().lower(): parts[1].strip().capitalize()
+        for line in raw.splitlines() if ":" in line and (parts := line.split(":", 1))
+    }
+    return intents
 
 def detect_all_intents_batched(keywords, batch_size=100, delay=5):
     total = len(keywords)
@@ -122,42 +124,24 @@ if uploaded_file is not None:
             keyword_col = "Top queries"
             if keyword_col not in df.columns: st.error(f"Kolom '{keyword_col}' tidak ditemukan."); st.stop()
 
-            ### =================================================================== ###
-            ### ### PERBAIKAN: Pastikan semua kolom metrik bersih dan numerik ### ###
-            ### =================================================================== ###
             metric_cols = [
-                'Last 3 months CTR', 'Previous 3 months CTR',
-                'Last 3 months Position', 'Previous 3 months Position',
-                'Last 3 months Impressions', 'Previous 3 months Impressions',
-                'Last 3 months Clicks', 'Previous 3 months Clicks'
+                'Last 3 months CTR', 'Previous 3 months CTR', 'Last 3 months Position', 
+                'Previous 3 months Position', 'Last 3 months Impressions', 
+                'Previous 3 months Impressions', 'Last 3 months Clicks', 'Previous 3 months Clicks'
             ]
-
-            # Pastikan semua kolom ada untuk menghindari error
             for col in metric_cols:
                 if col not in df.columns:
                     df[col] = 0
-
-            # Konversi semua kolom metrik menjadi numerik.
-            # `errors='coerce'` akan mengubah nilai non-numerik (teks) menjadi NaN (kosong).
             for col in metric_cols:
-                # Khusus untuk CTR yang mungkin dalam format persen
                 if 'CTR' in col and df[col].dtype == 'object':
-                    df[col] = df[col].astype(str).str.replace('%', '', regex=False)
+                     df[col] = df[col].astype(str).str.replace('%', '', regex=False)
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            # Isi semua sel kosong (NaN) yang mungkin muncul dengan 0.
             df[metric_cols] = df[metric_cols].fillna(0)
-
-            # Normalisasi kolom CTR setelah dipastikan numerik
             if 'Last 3 months CTR' in df.columns and df['Last 3 months CTR'].max() > 1:
                 df['Last 3 months CTR'] = df['Last 3 months CTR'] / 100
             if 'Previous 3 months CTR' in df.columns and df['Previous 3 months CTR'].max() > 1:
                 df['Previous 3 months CTR'] = df['Previous 3 months CTR'] / 100
-            ### =================================================================== ###
-            ### ### AKHIR BLOK PERBAIKAN                                        ### ###
-            ### =================================================================== ###
 
-            # Kalkulasi sekarang aman karena semua input sudah numerik
             df['Needs Optimization'] = ((df['Last 3 months CTR'] < df['Previous 3 months CTR'] * 0.9) |
                                         ((df['Last 3 months CTR'] < 0.02) & (df['Last 3 months Position'] < 3) & (df['Last 3 months Impressions'] > 5000)) |
                                         ((df['Last 3 months Clicks'] < df['Previous 3 months Clicks']) & (df['Last 3 months Impressions'] > df['Previous 3 months Impressions'])))
@@ -171,12 +155,14 @@ if uploaded_file is not None:
                     df = pd.merge(df, df_existing_intents, left_on='query_lower', right_on='top_query', how='left')
                     df.drop(columns=['query_lower', 'top_query'], inplace=True, errors='ignore')
 
-            if 'keyword_intent' not in df.columns: df['keyword_intent'] = 'Unknown'
-            else: df['keyword_intent'].fillna('Unknown', inplace=True)
+            if 'keyword_intent' not in df.columns: 
+                df['keyword_intent'] = 'Unknown'
+            else: 
+                # ### PERBAIKAN WARNING: Hapus inplace=True ###
+                df['keyword_intent'] = df['keyword_intent'].fillna('Unknown')
 
         st.session_state.df = df
         st.rerun()
-
 
     df = st.session_state.df
     keyword_col = "Top queries"
@@ -185,7 +171,8 @@ if uploaded_file is not None:
     unknown_intent_count = (df['keyword_intent'] == 'Unknown').sum()
     st.sidebar.write(f"**{unknown_intent_count}** keyword belum memiliki intent (dari keseluruhan data).")
 
-    if st.sidebar.button(f" Generate & Save Intent", disabled=(unknown_intent_count == 0)):
+    # ### PERBAIKAN ERROR: Tambahkan bool() untuk memastikan tipe data ###
+    if st.sidebar.button(f"🤖 Generate & Save Intent", disabled=bool(unknown_intent_count == 0)):
         df_unknown = df[df['keyword_intent'] == 'Unknown']
         keywords_to_process = df_unknown[keyword_col].unique().tolist()
         if not keywords_to_process:
@@ -222,7 +209,7 @@ if uploaded_file is not None:
     if only_optimize:
         display_df = display_df[display_df['Needs Optimization']]
 
-    st.subheader("Edit Intent Keyword")
+    st.subheader("Editor Data Keyword")
     all_intents_list = sorted(df['keyword_intent'].unique().tolist())
     selected_intents = st.multiselect("Filter berdasarkan Intent:", options=all_intents_list, default=all_intents_list)
     if selected_intents:
@@ -254,9 +241,11 @@ if uploaded_file is not None:
                 with st.spinner(f"Menyimpan {len(df_changes)} perubahan ke database..."):
                     init_db(conn)
                     rows_affected = save_to_db(conn, df_changes)
-                    st.session_state.df.set_index(keyword_col, inplace=True)
-                    st.session_state.df['keyword_intent'].update(df_changes.set_index('Top queries')['keyword_intent'])
-                    st.session_state.df.reset_index(inplace=True)
+                    # Perbaiki logika update state agar lebih aman dari duplikasi
+                    df_state = st.session_state.df.set_index(keyword_col)
+                    df_changes.set_index(keyword_col, inplace=True)
+                    df_state.update(df_changes)
+                    st.session_state.df = df_state.reset_index()
                     st.success(f"{rows_affected} perubahan berhasil disimpan!")
                     st.rerun()
 
@@ -264,58 +253,26 @@ if uploaded_file is not None:
     st.sidebar.download_button("Download Data Tampilan", display_df.to_csv(index=False).encode('utf-8'), "seo_analyzed_data.csv", "text/csv")
     
     st.markdown("---")
-
-    ### ====================================================================== ###
-    ### ### PERUBAHAN: BLOK VISUALISASI BARU MENGGUNAKAN ALTAIR               ### ###
-    ### ====================================================================== ###
-
+    st.subheader("📊 Visualisasi Perubahan Trafik per Intent")
     df_viz = display_df[display_df['keyword_intent'] != 'Unknown'].copy()
-
     if not df_viz.empty:
         intent_agg = df_viz.groupby('keyword_intent')[[
             'Previous 3 months Impressions', 'Last 3 months Impressions',
             'Previous 3 months Clicks', 'Last 3 months Clicks'
-        ]].sum().reset_index()
-
-        # Fungsi untuk membuat grafik berkelompok dengan Altair
-        def create_grouped_bar_chart(data, value_col_prefix, title):
-            # Mengubah format data dari 'wide' ke 'long'
-            data_long = data.melt(
-                id_vars='keyword_intent',
-                value_vars=[f'{value_col_prefix} Previous 3 months', f'{value_col_prefix} Last 3 months'],
-                var_name='Periode',
-                value_name='Total'
-            )
-            
-            chart = alt.Chart(data_long).mark_bar().encode(
-                x=alt.X('keyword_intent:N', title='Intent', sort='-y'),
-                y=alt.Y('Total:Q', title=f'Total {value_col_prefix}'),
-                color=alt.Color('Periode:N', title='Periode'),
-                xOffset='Periode:N' # Kunci untuk membuat grouped bar chart
-            ).properties(
-                title=title
-            )
-            return chart
-
-        # Membuat dan menampilkan grafik Impresi
-        impressions_chart_data = intent_agg[['keyword_intent', 'Previous 3 months Impressions', 'Last 3 months Impressions']].rename(columns={
-            'Previous 3 months Impressions': 'Impresi Previous 3 months',
-            'Last 3 months Impressions': 'Impresi Last 3 months'
-        })
-        impressions_chart = create_grouped_bar_chart(impressions_chart_data, 'Impresi', 'Perbandingan Total Impresi')
-        st.altair_chart(impressions_chart, use_container_width=True)
-
-        # Membuat dan menampilkan grafik Klik
-        clicks_chart_data = intent_agg[['keyword_intent', 'Previous 3 months Clicks', 'Last 3 months Clicks']].rename(columns={
-            'Previous 3 months Clicks': 'Klik Previous 3 months',
-            'Last 3 months Clicks': 'Klik Last 3 months'
-        })
-        clicks_chart = create_grouped_bar_chart(clicks_chart_data, 'Klik', 'Perbandingan Total Klik')
-        st.altair_chart(clicks_chart, use_container_width=True)
-
+        ]].sum()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("#### Perbandingan Total Impresi")
+            impressions_data = intent_agg[['Previous 3 months Impressions', 'Last 3 months Impressions']]
+            if not impressions_data.empty: st.bar_chart(impressions_data)
+            else: st.info("Tidak ada data impresi untuk ditampilkan.")
+        with col2:
+            st.write("#### Perbandingan Total Klik")
+            clicks_data = intent_agg[['Previous 3 months Clicks', 'Last 3 months Clicks']]
+            if not clicks_data.empty: st.bar_chart(clicks_data)
+            else: st.info("Tidak ada data klik untuk ditampilkan.")
     else:
         st.info("Tidak ada data untuk ditampilkan dalam visualisasi berdasarkan filter Anda saat ini.")
-    
 
 else:
-    st.info(" Selamat datang! Silakan upload file CSV dari Google Search Console untuk memulai analisis.")
+    st.info("👋 Selamat datang! Silakan upload file CSV dari Google Search Console untuk memulai analisis.")
