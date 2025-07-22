@@ -6,7 +6,7 @@ import time
 import psycopg2
 import psycopg2.extras
 from datetime import datetime
-import altair as alt # ### PERUBAHAN: Tambahkan import ini ###
+import altair as alt
 
 # --- KONFIGURASI DAN KONEKSI ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
