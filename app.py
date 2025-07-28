@@ -103,7 +103,7 @@ def detect_all_intents_batched(keywords, batch_size=100, delay=5):
     progress_bar.empty()
     return all_intents
 
-# --- ANTARMUKA PENGGUNA (STREAMLIT UI) ---
+# --- ANTARMUKA PENGGUNA ---
 st.set_page_config(page_title="SEO Optimizer", layout="wide")
 st.title("SEO Analysis Dashboard")
 
@@ -117,6 +117,7 @@ if uploaded_file is not None:
     if 'df' not in st.session_state:
         with st.spinner("Membaca dan memproses file CSV..."):
             df = pd.read_csv(uploaded_file)
+            original_headers = df.columns.tolist()
             df.columns = df.columns.str.strip()
 
             # Deteksi kolom keyword
@@ -153,6 +154,12 @@ if uploaded_file is not None:
                 position_cols[0]: 'Previous 3 months Position',
                 keyword_col: 'Top queries'
             }
+            
+            # Simpan mapping untuk tampilan
+            st.session_state.column_mapping = column_mapping
+            st.session_state.reverse_mapping = {v: k for k, v in column_mapping.items()}
+            st.session_state.original_headers = {standard: original for original, standard in column_mapping.items()}
+            
             df.rename(columns=column_mapping, inplace=True)
 
             # Pastikan kolom metrik numerik
@@ -255,18 +262,44 @@ if uploaded_file is not None:
     unknown_in_view = (display_df['keyword_intent'] == 'Unknown').sum()
     st.info(f"Anda dapat mengubah **Keyword Intent** di bawah. Tampilan saat ini memiliki **{unknown_in_view}** keyword tanpa intent.")
     
+    # Fungsi untuk mendapatkan header asli
+    def get_original_header(standard_name):
+        return st.session_state.reverse_mapping.get(standard_name, standard_name)
+    
+    # Buat DataFrame untuk tampilan dengan header asli
+    display_df_renamed = display_df.rename(columns={
+        col: get_original_header(col) 
+        for col in display_df.columns 
+        if col in st.session_state.reverse_mapping
+    })
+    
+    # Tampilkan tabel dengan header asli
     edited_df = st.data_editor(
-        display_df,
+        display_df_renamed,
         column_config={
-            "keyword_intent": st.column_config.SelectboxColumn("Keyword Intent", help="Pilih intent manual", width="medium", options=["Informasional", "Komersial", "Navigasional", "Transaksional", "Unknown"], required=True),
-            "Top queries": st.column_config.TextColumn(disabled=True),
-            "Needs Optimization": st.column_config.CheckboxColumn(disabled=True),
+            get_original_header("keyword_intent"): st.column_config.SelectboxColumn(
+                "Keyword Intent",
+                options=["Informasional", "Komersial", "Navigasional", "Transaksional", "Unknown"],
+                required=True
+            ),
+            get_original_header("Needs Optimization"): st.column_config.CheckboxColumn(
+                "Perlu Optimasi",
+                disabled=True
+            )
         },
-        use_container_width=True, hide_index=True,
+        use_container_width=True,
+        hide_index=True
     )
 
     if st.button("Simpan Perubahan Manual"):
-        comparison_df = df.merge(pd.DataFrame(edited_df), on=keyword_col, how="inner", suffixes=('_original', '_edited'))
+        # Kembalikan ke header standar untuk pemrosesan
+        edited_df_standard = edited_df.rename(columns={
+            get_original_header(col): col 
+            for col in display_df.columns 
+            if col in st.session_state.reverse_mapping
+        })
+        
+        comparison_df = df.merge(edited_df_standard, on=keyword_col, how="inner", suffixes=('_original', '_edited'))
         changed_rows = comparison_df[comparison_df['keyword_intent_original'] != comparison_df['keyword_intent_edited']]
         if changed_rows.empty:
             st.warning("Tidak ada perubahan yang terdeteksi.")
@@ -284,63 +317,76 @@ if uploaded_file is not None:
                     st.rerun()
 
     st.sidebar.markdown("---")
-    st.sidebar.download_button("Download Data Tampilan", display_df.to_csv(index=False).encode('utf-8'), "seo_analyzed_data.csv", "text/csv")
+    st.sidebar.download_button(
+        "Download Data Tampilan", 
+        display_df_renamed.to_csv(index=False).encode('utf-8'), 
+        "seo_analyzed_data.csv", 
+        "text/csv"
+    )
     
     st.markdown("---")
 
-    ### ====================================================================== ###
-    ### ### PERUBAHAN: BLOK VISUALISASI BARU MENGGUNAKAN ALTAIR               ### ###
-    ### ====================================================================== ###
-
+    ### BLOK VISUALISASI DENGAN HEADER ASLI ###
     df_viz = display_df[display_df['keyword_intent'] != 'Unknown'].copy()
 
     if not df_viz.empty:
+        # Dapatkan header asli
+        def get_original_header(standard_name):
+            return st.session_state.reverse_mapping.get(standard_name, standard_name)
+        
+        # Buat label untuk visualisasi
+        original_labels = {
+            'last_impressions': get_original_header('Last 3 months Impressions'),
+            'prev_impressions': get_original_header('Previous 3 months Impressions'),
+            'last_clicks': get_original_header('Last 3 months Clicks'),
+            'prev_clicks': get_original_header('Previous 3 months Clicks'),
+            'intent': 'Tipe Intent'
+        }
+        
         intent_agg = df_viz.groupby('keyword_intent')[[
             'Previous 3 months Impressions', 'Last 3 months Impressions',
             'Previous 3 months Clicks', 'Last 3 months Clicks'
         ]].sum().reset_index()
 
-        # Fungsi untuk membuat grafik berkelompok dengan Altair
-        def create_grouped_bar_chart(data, value_col_prefix, title):
-            # Mengubah format data dari 'wide' ke 'long'
-            data_long = data.melt(
-                id_vars='keyword_intent',
-                value_vars=[f'{value_col_prefix} Previous 3 months', f'{value_col_prefix} Last 3 months'],
-                var_name='Periode',
-                value_name='Total'
-            )
+        # Fungsi untuk membuat grafik
+        def create_chart(data, last_col, prev_col, title):
+            df_chart = pd.DataFrame({
+                'Intent': data['keyword_intent'],
+                original_labels['last_'+last_col.lower()]: data[f'Last 3 months {last_col}'],
+                original_labels['prev_'+last_col.lower()]: data[f'Previous 3 months {last_col}']
+            }).melt(id_vars='Intent', var_name='Periode', value_name='Total')
             
-            chart = alt.Chart(data_long).mark_bar().encode(
-                x=alt.X('keyword_intent:N', title='Intent', sort='-y'),
-                y=alt.Y('Total:Q', title=f'Total {value_col_prefix}'),
-                color=alt.Color('Periode:N', title='Periode'),
-                xOffset='Periode:N' # Kunci untuk membuat grouped bar chart
+            chart = alt.Chart(df_chart).mark_bar().encode(
+                x=alt.X('Intent:N', title=original_labels['intent'], sort='-y'),
+                y=alt.Y('Total:Q', title=''),
+                color=alt.Color('Periode:N', title='Periode',
+                               scale=alt.Scale(range=['#4E79A7', '#F28E2B'])),
+                xOffset='Periode:N'
             ).properties(
-                title=title
+                title=title,
+                width=600
             )
             return chart
 
-        # Membuat dan menampilkan grafik Impresi
-        impressions_chart_data = intent_agg[['keyword_intent', 'Previous 3 months Impressions', 'Last 3 months Impressions']].rename(columns={
-            'Previous 3 months Impressions': 'Impresi Previous 3 months',
-            'Last 3 months Impressions': 'Impresi Last 3 months'
-        })
-        impressions_chart = create_grouped_bar_chart(impressions_chart_data, 'Impresi', 'Perbandingan Total Impresi')
-        st.altair_chart(impressions_chart, use_container_width=True)
-
-        # Membuat dan menampilkan grafik Klik
-        clicks_chart_data = intent_agg[['keyword_intent', 'Previous 3 months Clicks', 'Last 3 months Clicks']].rename(columns={
-            'Previous 3 months Clicks': 'Klik Previous 3 months',
-            'Last 3 months Clicks': 'Klik Last 3 months'
-        })
-        clicks_chart = create_grouped_bar_chart(clicks_chart_data, 'Klik', 'Perbandingan Total Klik')
-        st.altair_chart(clicks_chart, use_container_width=True)
-
+        # Tampilkan grafik
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"**{original_labels['last_impressions']} vs {original_labels['prev_impressions']}**")
+            st.altair_chart(
+                create_chart(intent_agg, 'Impressions', 'Impressions', ''),
+                use_container_width=True
+            )
+        
+        with col2:
+            st.write(f"**{original_labels['last_clicks']} vs {original_labels['prev_clicks']}**")
+            st.altair_chart(
+                create_chart(intent_agg, 'Clicks', 'Clicks', ''),
+                use_container_width=True
+            )
+            
     else:
         st.info("Tidak ada data untuk ditampilkan dalam visualisasi berdasarkan filter Anda saat ini.")
-    ### ====================================================================== ###
-    ### ### AKHIR BLOK PERUBAHAN                                             ### ###
-    ### ====================================================================== ###
 
 else:
     st.info(" Selamat datang! Silakan upload file CSV dari Google Search Console untuk memulai analisis.")
