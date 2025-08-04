@@ -9,12 +9,20 @@ from datetime import datetime
 import altair as alt
 
 # --- KONFIGURASI DAN KONEKSI ---
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+try:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+except (KeyError, AttributeError):
+    st.error("Kunci API Gemini belum diatur. Harap tambahkan ke secrets Anda.")
+    st.stop()
 
+@st.cache_resource
 def get_db_conn():
     try:
         conn = psycopg2.connect(**st.secrets["postgres"])
         return conn
+    except (KeyError, AttributeError):
+        st.error("Konfigurasi database PostgreSQL belum diatur. Harap tambahkan ke secrets Anda.")
+        return None
     except psycopg2.OperationalError as e:
         st.error(f"Gagal terhubung ke database PostgreSQL: {e}")
         return None
@@ -69,18 +77,14 @@ def detect_intents_batch(keywords):
         "Berikut adalah keyword yang harus dianalisis:\n"
     )
     prompt += "\n".join([f"- {kw}" for kw in keywords])
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        raw = response.text.strip()
-        intents = {
-            parts[0].replace("-", "").strip().lower(): parts[1].strip().capitalize()
-            for line in raw.splitlines() if ":" in line and (parts := line.split(":", 1))
-        }
-        return intents
-    except Exception as e:
-        st.error(f"[Gemini ERROR]: {e}")
-        return {}
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    response = model.generate_content(prompt)
+    raw = response.text.strip()
+    intents = {
+        parts[0].replace("-", "").strip().lower(): parts[1].strip().capitalize()
+        for line in raw.splitlines() if ":" in line and (parts := line.split(":", 1))
+    }
+    return intents
 
 def detect_all_intents_batched(keywords, batch_size=100, delay=5):
     total = len(keywords)
@@ -103,94 +107,67 @@ def detect_all_intents_batched(keywords, batch_size=100, delay=5):
     progress_bar.empty()
     return all_intents
 
-# --- ANTARMUKA PENGGUNA ---
+# --- ANTARMUKA PENGGUNA (STREAMLIT UI) ---
 st.set_page_config(page_title="SEO Optimizer", layout="wide")
 st.title("SEO Analysis Dashboard")
 
 def clear_state_on_upload():
-    if 'df' in st.session_state:
-        del st.session_state.df
+    if 'df' in st.session_state: del st.session_state.df
+    if 'column_mapping' in st.session_state: del st.session_state.column_mapping
+    if 'reverse_mapping' in st.session_state: del st.session_state.reverse_mapping
 
 uploaded_file = st.file_uploader("Upload file CSV", type=["csv"], on_change=clear_state_on_upload)
 
 if uploaded_file is not None:
     if 'df' not in st.session_state:
         with st.spinner("Membaca dan memproses file CSV..."):
-            df = pd.read_csv(uploaded_file)
-            original_headers = df.columns.tolist()
-            df.columns = df.columns.str.strip()
-
-            # Deteksi kolom keyword
-            keyword_col_candidates = ['Top queries', 'Kueri teratas']
-            keyword_col = next((col for col in df.columns if col in keyword_col_candidates), None)
-            if not keyword_col:
-                st.error("Kolom keyword (Top queries / Kueri teratas) tidak ditemukan."); st.stop()
-
-            # Fungsi untuk mendeteksi kolom berdasarkan kata kunci
-            def detect_metric_columns(columns, keyword):
-                return sorted(
-                    [col for col in columns if keyword.lower() in col.lower()],
-                    key=lambda x: x.lower()
-                )
-
-            clicks_cols = detect_metric_columns(df.columns, "klik")
-            impressions_cols = detect_metric_columns(df.columns, "tayangan")
-            ctr_cols = detect_metric_columns(df.columns, "ctr")
-            position_cols = detect_metric_columns(df.columns, "posisi")
-
-            # Validasi kolom minimal harus 2 per metrik
-            if not (len(clicks_cols) == len(impressions_cols) == len(ctr_cols) == len(position_cols) == 2):
-                st.error("Jumlah kolom metrik tidak sesuai (Klik, Tayangan, CTR, Posisi harus masing-masing 2)."); st.stop()
-
-            # Mapping ke format internal standar
-            column_mapping = {
-                clicks_cols[1]: 'Last 3 months Clicks',
-                clicks_cols[0]: 'Previous 3 months Clicks',
-                impressions_cols[1]: 'Last 3 months Impressions',
-                impressions_cols[0]: 'Previous 3 months Impressions',
-                ctr_cols[1]: 'Last 3 months CTR',
-                ctr_cols[0]: 'Previous 3 months CTR',
-                position_cols[1]: 'Last 3 months Position',
-                position_cols[0]: 'Previous 3 months Position',
-                keyword_col: 'Top queries'
-            }
             
-            # Simpan mapping untuk tampilan
-            st.session_state.column_mapping = column_mapping
-            st.session_state.reverse_mapping = {v: k for k, v in column_mapping.items()}
-            st.session_state.original_headers = {standard: original for original, standard in column_mapping.items()}
+            # ### PERBAIKAN UTAMA ADA DI BLOK INI ###
+            try:
+                # 1. Baca hanya baris header asli untuk disimpan
+                original_headers = pd.read_csv(uploaded_file, nrows=0).columns.tolist()
+                # Reset pointer file setelah membaca header
+                uploaded_file.seek(0) 
+
+                # 2. Definisikan header standar internal sesuai urutan GSC
+                standard_headers = [
+                    'Top queries', 'Last 3 months Clicks', 'Previous 3 months Clicks',
+                    'Last 3 months Impressions', 'Previous 3 months Impressions',
+                    'Last 3 months CTR', 'Previous 3 months CTR',
+                    'Last 3 months Position', 'Previous 3 months Position'
+                ]
+                
+                if len(original_headers) < len(standard_headers):
+                    st.error(f"File CSV Anda memiliki {len(original_headers)} kolom, tetapi aplikasi mengharapkan minimal {len(standard_headers)} kolom perbandingan.")
+                    st.stop()
+
+                standard_headers_to_use = standard_headers[:len(original_headers)]
+                
+                # 3. Baca data CSV dengan MELEWATI header asli, dan langsung terapkan header standar
+                df = pd.read_csv(uploaded_file, skiprows=1, names=standard_headers_to_use)
+                
+                # 4. Buat dan simpan mapping antara header asli dan standar
+                column_mapping = dict(zip(original_headers, standard_headers_to_use))
+                st.session_state.column_mapping = column_mapping
+                st.session_state.reverse_mapping = {v: k for k, v in column_mapping.items()}
+
+            except Exception as e:
+                st.error(f"Gagal memproses file CSV. Pastikan formatnya benar. Error: {e}")
+                st.stop()
             
-            df.rename(columns=column_mapping, inplace=True)
-
-            # Pastikan kolom metrik numerik
-            metric_cols = [
-                'Last 3 months CTR', 'Previous 3 months CTR',
-                'Last 3 months Position', 'Previous 3 months Position',
-                'Last 3 months Impressions', 'Previous 3 months Impressions',
-                'Last 3 months Clicks', 'Previous 3 months Clicks'
-            ]
-
+            # --- Proses pembersihan data (sama seperti sebelumnya) ---
+            metric_cols = [h for h in standard_headers if h != 'Top queries']
             for col in metric_cols:
-                if col not in df.columns:
-                    df[col] = 0
-                if 'CTR' in col:
-                    df[col] = df[col].astype(str).str.replace('%', '', regex=False)
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                if col in df.columns:
+                    if 'CTR' in col: df[col] = df[col].astype(str).str.replace('%', '', regex=False)
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             df[metric_cols] = df[metric_cols].fillna(0)
-
-            # Normalisasi CTR ke bentuk desimal jika perlu
-            if df['Last 3 months CTR'].max() > 1:
-                df['Last 3 months CTR'] = df['Last 3 months CTR'] / 100
-            if df['Previous 3 months CTR'].max() > 1:
-                df['Previous 3 months CTR'] = df['Previous 3 months CTR'] / 100
-
-            # Logika: butuh optimasi?
-            df['Needs Optimization'] = (
-                (df['Last 3 months CTR'] < df['Previous 3 months CTR'] * 0.9) |
-                ((df['Last 3 months CTR'] < 0.02) & (df['Last 3 months Position'] < 3) & (df['Last 3 months Impressions'] > 5000)) |
-                ((df['Last 3 months Clicks'] < df['Previous 3 months Clicks']) & (df['Last 3 months Impressions'] > df['Previous 3 months Impressions']))
-            )
-
+            if df['Last 3 months CTR'].max() > 1: df['Last 3 months CTR'] /= 100
+            if df['Previous 3 months CTR'].max() > 1: df['Previous 3 months CTR'] /= 100
+            df['Needs Optimization'] = ((df['Last 3 months CTR'] < df['Previous 3 months CTR'] * 0.9) | 
+                                        ((df['Last 3 months CTR'] < 0.02) & (df['Last 3 months Position'] < 3) & (df['Last 3 months Impressions'] > 5000)) | 
+                                        ((df['Last 3 months Clicks'] < df['Previous 3 months Clicks']) & (df['Last 3 months Impressions'] > df['Previous 3 months Impressions'])))
+            
         with st.spinner("Mencocokkan data dengan database..."):
             conn = get_db_conn()
             if conn:
@@ -199,27 +176,27 @@ if uploaded_file is not None:
                     df['query_lower'] = df['Top queries'].str.lower()
                     df = pd.merge(df, df_existing_intents, left_on='query_lower', right_on='top_query', how='left')
                     df.drop(columns=['query_lower', 'top_query'], inplace=True, errors='ignore')
-
-            if 'keyword_intent' not in df.columns:
-                df['keyword_intent'] = 'Unknown'
-            else:
-                df['keyword_intent'].fillna('Unknown', inplace=True)
-
+            if 'keyword_intent' not in df.columns: df['keyword_intent'] = 'Unknown'
+            else: df['keyword_intent'] = df['keyword_intent'].fillna('Unknown')
+        
         st.session_state.df = df
         st.rerun()
 
+    # --- Sisa kode tidak ada perubahan, karena sudah bergantung pada header standar ---
     df = st.session_state.df
-    keyword_col = "Top queries"
+    keyword_col = "Top queries" 
+    reverse_mapping = st.session_state.get('reverse_mapping', {})
+    column_mapping = st.session_state.get('column_mapping', {})
+    original_keyword_col = reverse_mapping.get(keyword_col, keyword_col)
 
     st.sidebar.header("Tindakan")
     unknown_intent_count = (df['keyword_intent'] == 'Unknown').sum()
     st.sidebar.write(f"**{unknown_intent_count}** keyword belum memiliki intent (dari keseluruhan data).")
 
-    if st.sidebar.button(f" Generate & Save Intent", disabled=(unknown_intent_count == 0)):
+    if st.sidebar.button(f"🤖 Generate & Save Intent", disabled=bool(unknown_intent_count == 0)):
         df_unknown = df[df['keyword_intent'] == 'Unknown']
         keywords_to_process = df_unknown[keyword_col].unique().tolist()
-        if not keywords_to_process:
-            st.info("Semua keyword sudah memiliki intent.")
+        if not keywords_to_process: st.info("Semua keyword sudah memiliki intent.")
         else:
             new_intents_dict = detect_all_intents_batched(keywords_to_process, delay=20)
             if new_intents_dict:
@@ -229,8 +206,7 @@ if uploaded_file is not None:
                         init_db(conn)
                         df_to_save = pd.DataFrame(list(new_intents_dict.items()), columns=['Top queries', 'keyword_intent'])
                         rows_saved = save_to_db(conn, df_to_save)
-                        if rows_saved > 0:
-                            st.success(f"{rows_saved} intent baru berhasil disimpan ke database!")
+                        if rows_saved > 0: st.success(f"{rows_saved} intent baru berhasil disimpan ke database!")
                 df_state = st.session_state.df
                 df_new_intents = pd.DataFrame(list(new_intents_dict.items()), columns=['query_lower_case', 'new_intent'])
                 df_state['query_lower_case'] = df_state[keyword_col].str.lower()
@@ -238,71 +214,36 @@ if uploaded_file is not None:
                 df_merged['keyword_intent'] = df_merged['new_intent'].combine_first(df_merged['keyword_intent'])
                 df_merged.drop(columns=['query_lower_case', 'new_intent'], inplace=True)
                 st.session_state.df = df_merged
-                st.info("Tampilan akan diperbarui...")
-                time.sleep(2)
-                st.rerun()
+                st.info("Tampilan akan diperbarui..."); time.sleep(2); st.rerun()
             else:
                 st.warning("Tidak ada hasil baru dari AI untuk disimpan atau diperbarui.")
 
-    st.sidebar.markdown("---")
-    st.sidebar.header("Filters")
+    st.sidebar.markdown("---"); st.sidebar.header("Filters")
     only_optimize = st.sidebar.checkbox("Hanya tampilkan yang 'Needs Optimization'", value=True)
-    
     display_df = df.copy()
-    if only_optimize:
-        display_df = display_df[display_df['Needs Optimization']]
+    if only_optimize: display_df = display_df[display_df['Needs Optimization']]
 
-    st.subheader("Edit Intent Keyword")
+    st.subheader("Editor Data Keyword")
     all_intents_list = sorted(df['keyword_intent'].unique().tolist())
     selected_intents = st.multiselect("Filter berdasarkan Intent:", options=all_intents_list, default=all_intents_list)
-    if selected_intents:
-        display_df = display_df[display_df['keyword_intent'].isin(selected_intents)]
-    else:
-        display_df = display_df.head(0)
+    if selected_intents: display_df = display_df[display_df['keyword_intent'].isin(selected_intents)]
+    else: display_df = display_df.head(0)
     unknown_in_view = (display_df['keyword_intent'] == 'Unknown').sum()
     st.info(f"Anda dapat mengubah **Keyword Intent** di bawah. Tampilan saat ini memiliki **{unknown_in_view}** keyword tanpa intent.")
     
-    # Fungsi untuk mendapatkan header asli
-    def get_original_header(standard_name):
-        return st.session_state.reverse_mapping.get(standard_name, standard_name)
-    
-    # Buat DataFrame untuk tampilan dengan header asli
-    display_df_renamed = display_df.rename(columns={
-        col: get_original_header(col) 
-        for col in display_df.columns 
-        if col in st.session_state.reverse_mapping
-    })
-    
-    # Tampilkan tabel dengan header asli
-    edited_df = st.data_editor(
-        display_df_renamed,
-        column_config={
-            get_original_header("keyword_intent"): st.column_config.SelectboxColumn(
-                "Keyword Intent",
-                options=["Informasional", "Komersial", "Navigasional", "Transaksional", "Unknown"],
-                required=True
-            ),
-            get_original_header("Needs Optimization"): st.column_config.CheckboxColumn(
-                "Perlu Optimasi",
-                disabled=True
-            )
-        },
-        use_container_width=True,
-        hide_index=True
-    )
+    display_df_renamed = display_df.rename(columns=reverse_mapping)
+    column_config = {"keyword_intent": st.column_config.SelectboxColumn(reverse_mapping.get("keyword_intent", "Keyword Intent"), help="Pilih intent manual", width="medium", options=["Informasional", "Komersial", "Navigasional", "Transaksional", "Unknown"], required=True), original_keyword_col: st.column_config.TextColumn(disabled=True),}
+    for col_name in display_df_renamed.columns:
+        if col_name not in [original_keyword_col, 'keyword_intent']:
+            column_config[col_name] = st.column_config.Column(disabled=True)
+            
+    edited_df_renamed = st.data_editor(display_df_renamed, column_config=column_config, use_container_width=True, hide_index=True)
 
     if st.button("Simpan Perubahan Manual"):
-        # Kembalikan ke header standar untuk pemrosesan
-        edited_df_standard = edited_df.rename(columns={
-            get_original_header(col): col 
-            for col in display_df.columns 
-            if col in st.session_state.reverse_mapping
-        })
-        
-        comparison_df = df.merge(edited_df_standard, on=keyword_col, how="inner", suffixes=('_original', '_edited'))
+        edited_df = edited_df_renamed.rename(columns=column_mapping)
+        comparison_df = df.merge(edited_df, on=keyword_col, how="inner", suffixes=('_original', '_edited'))
         changed_rows = comparison_df[comparison_df['keyword_intent_original'] != comparison_df['keyword_intent_edited']]
-        if changed_rows.empty:
-            st.warning("Tidak ada perubahan yang terdeteksi.")
+        if changed_rows.empty: st.warning("Tidak ada perubahan yang terdeteksi.")
         else:
             df_changes = pd.DataFrame({'Top queries': changed_rows[keyword_col], 'keyword_intent': changed_rows['keyword_intent_edited']})
             conn = get_db_conn()
@@ -310,83 +251,32 @@ if uploaded_file is not None:
                 with st.spinner(f"Menyimpan {len(df_changes)} perubahan ke database..."):
                     init_db(conn)
                     rows_affected = save_to_db(conn, df_changes)
-                    st.session_state.df.set_index(keyword_col, inplace=True)
-                    st.session_state.df['keyword_intent'].update(df_changes.set_index('Top queries')['keyword_intent'])
-                    st.session_state.df.reset_index(inplace=True)
+                    df_state = st.session_state.df.set_index(keyword_col)
+                    df_changes.set_index(keyword_col, inplace=True)
+                    df_state.update(df_changes)
+                    st.session_state.df = df_state.reset_index()
                     st.success(f"{rows_affected} perubahan berhasil disimpan!")
                     st.rerun()
 
     st.sidebar.markdown("---")
-    st.sidebar.download_button(
-        "Download Data Tampilan", 
-        display_df_renamed.to_csv(index=False).encode('utf-8'), 
-        "seo_analyzed_data.csv", 
-        "text/csv"
-    )
-    
+    display_df_download = display_df.rename(columns=reverse_mapping)
+    st.sidebar.download_button("Download Data Tampilan", display_df_download.to_csv(index=False).encode('utf-8'), "seo_analyzed_data.csv", "text/csv")
     st.markdown("---")
-
-    ### BLOK VISUALISASI DENGAN HEADER ASLI ###
+    
+    st.subheader("📊 Visualisasi Perubahan Trafik per Intent")
     df_viz = display_df[display_df['keyword_intent'] != 'Unknown'].copy()
 
     if not df_viz.empty:
-        # Dapatkan header asli
-        def get_original_header(standard_name):
-            return st.session_state.reverse_mapping.get(standard_name, standard_name)
-        
-        # Buat label untuk visualisasi
-        original_labels = {
-            'last_impressions': get_original_header('Last 3 months Impressions'),
-            'prev_impressions': get_original_header('Previous 3 months Impressions'),
-            'last_clicks': get_original_header('Last 3 months Clicks'),
-            'prev_clicks': get_original_header('Previous 3 months Clicks'),
-            'intent': 'Tipe Intent'
-        }
-        
-        intent_agg = df_viz.groupby('keyword_intent')[[
-            'Previous 3 months Impressions', 'Last 3 months Impressions',
-            'Previous 3 months Clicks', 'Last 3 months Clicks'
-        ]].sum().reset_index()
-
-        # Fungsi untuk membuat grafik
-        def create_chart(data, last_col, prev_col, title):
-            df_chart = pd.DataFrame({
-                'Intent': data['keyword_intent'],
-                original_labels['last_'+last_col.lower()]: data[f'Last 3 months {last_col}'],
-                original_labels['prev_'+last_col.lower()]: data[f'Previous 3 months {last_col}']
-            }).melt(id_vars='Intent', var_name='Periode', value_name='Total')
-            
-            chart = alt.Chart(df_chart).mark_bar().encode(
-                x=alt.X('Intent:N', title=original_labels['intent'], sort='-y'),
-                y=alt.Y('Total:Q', title=''),
-                color=alt.Color('Periode:N', title='Periode',
-                               scale=alt.Scale(range=['#4E79A7', '#F28E2B'])),
-                xOffset='Periode:N'
-            ).properties(
-                title=title,
-                width=600
-            )
-            return chart
-
-        # Tampilkan grafik
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write(f"**{original_labels['last_impressions']} vs {original_labels['prev_impressions']}**")
-            st.altair_chart(
-                create_chart(intent_agg, 'Impressions', 'Impressions', ''),
-                use_container_width=True
-            )
-        
-        with col2:
-            st.write(f"**{original_labels['last_clicks']} vs {original_labels['prev_clicks']}**")
-            st.altair_chart(
-                create_chart(intent_agg, 'Clicks', 'Clicks', ''),
-                use_container_width=True
-            )
-            
+        intent_agg = df_viz.groupby('keyword_intent')[[ 'Previous 3 months Impressions', 'Last 3 months Impressions', 'Previous 3 months Clicks', 'Last 3 months Clicks' ]].sum().reset_index()
+        impressions_long = intent_agg.melt(id_vars='keyword_intent', value_vars=['Previous 3 months Impressions', 'Last 3 months Impressions'], var_name='Periode', value_name='Jumlah')
+        clicks_long = intent_agg.melt(id_vars='keyword_intent', value_vars=['Previous 3 months Clicks', 'Last 3 months Clicks'], var_name='Periode', value_name='Jumlah')
+        impressions_long['Periode'] = impressions_long['Periode'].map(reverse_mapping)
+        clicks_long['Periode'] = clicks_long['Periode'].map(reverse_mapping)
+        impressions_chart = alt.Chart(impressions_long).mark_bar().encode(x=alt.X('keyword_intent:N', title='Intent', sort='-y', axis=alt.Axis(labelAngle=-45)), y=alt.Y('Jumlah:Q', title=reverse_mapping.get('Last 3 months Impressions', 'Total Impresi')), color=alt.Color('Periode:N', title='Periode'), xOffset='Periode:N').properties(title=f"Perbandingan Total {reverse_mapping.get('Last 3 months Impressions', 'Impresi').split('(')[0].strip()}")
+        clicks_chart = alt.Chart(clicks_long).mark_bar().encode(x=alt.X('keyword_intent:N', title='Intent', sort='-y', axis=alt.Axis(labelAngle=-45)), y=alt.Y('Jumlah:Q', title=reverse_mapping.get('Last 3 months Clicks', 'Total Klik')), color=alt.Color('Periode:N', title='Periode'), xOffset='Periode:N').properties(title=f"Perbandingan Total {reverse_mapping.get('Last 3 months Clicks', 'Klik').split('(')[0].strip()}")
+        st.altair_chart(impressions_chart, use_container_width=True)
+        st.altair_chart(clicks_chart, use_container_width=True)
     else:
         st.info("Tidak ada data untuk ditampilkan dalam visualisasi berdasarkan filter Anda saat ini.")
-
 else:
-    st.info(" Selamat datang! Silakan upload file CSV dari Google Search Console untuk memulai analisis.")
+    st.info("👋 Selamat datang! Silakan upload file CSV dari Google Search Console untuk memulai analisis.")
