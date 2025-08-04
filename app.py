@@ -219,7 +219,7 @@ if uploaded_file is not None:
                 st.warning("Tidak ada hasil baru dari AI untuk disimpan atau diperbarui.")
 
     st.sidebar.markdown("---"); st.sidebar.header("Filters")
-    only_optimize = st.sidebar.checkbox("Hanya tampilkan yang 'Needs Optimization'", value=True)
+    only_optimize = st.sidebar.checkbox("Hanya tampilkan yang 'Needs Optimization'", value=False)
     display_df = df.copy()
     if only_optimize: display_df = display_df[display_df['Needs Optimization']]
 
