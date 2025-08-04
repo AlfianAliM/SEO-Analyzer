@@ -15,7 +15,6 @@ except (KeyError, AttributeError):
     st.error("Kunci API Gemini belum diatur. Harap tambahkan ke secrets Anda.")
     st.stop()
 
-@st.cache_resource
 def get_db_conn():
     try:
         conn = psycopg2.connect(**st.secrets["postgres"])
@@ -108,7 +107,11 @@ def detect_all_intents_batched(keywords, batch_size=100, delay=5):
     return all_intents
 
 # --- ANTARMUKA PENGGUNA (STREAMLIT UI) ---
-st.set_page_config(page_title="SEO Optimizer", layout="wide")
+st.set_page_config(
+    page_title="SEO Optimizer",
+    page_icon="SEO.png",
+    layout="wide"
+)
 st.title("SEO Analysis Dashboard")
 
 def clear_state_on_upload():
